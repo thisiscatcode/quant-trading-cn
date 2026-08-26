@@ -528,6 +528,28 @@ def _artifact_digest(path: Path) -> dict[str, Any]:
     return {"sha256": digest.hexdigest(), "size": path.stat().st_size}
 
 
+def verify_immutable_model_path(project_root: Path, model: dict[str, Any]) -> Path:
+    root = project_root.resolve()
+    artifact_dir = (root / str(model.get("artifact_path") or "")).resolve()
+    try:
+        artifact_dir.relative_to(root)
+    except ValueError as exc:
+        raise RuntimeError(f"model artifact path escapes project root: {artifact_dir}") from exc
+    immutable_dir = (
+        root
+        / "quant_data"
+        / "model_registry"
+        / str(model.get("market") or "").upper()
+        / str(model.get("model_version") or "")
+    ).resolve()
+    if artifact_dir != immutable_dir:
+        raise RuntimeError(
+            f"active model {model.get('model_version') or 'unknown'} uses a mutable artifact path; "
+            f"expected {immutable_dir}"
+        )
+    return artifact_dir
+
+
 def resolve_paper_model(config: SyncConfig) -> tuple[SyncConfig, dict[str, Any]]:
     """Resolve and verify one registry deployment for the entire reconciliation cycle."""
     if not config.paper_db_url:
@@ -559,11 +581,7 @@ def resolve_paper_model(config: SyncConfig) -> tuple[SyncConfig, dict[str, Any]]
             f"active model {model['model_version']} has validation status {model['validation_status']}"
         )
     project_root = Path.cwd().resolve()
-    artifact_dir = (project_root / str(model["artifact_path"])).resolve()
-    try:
-        artifact_dir.relative_to(project_root)
-    except ValueError as exc:
-        raise RuntimeError(f"model artifact path escapes project root: {artifact_dir}") from exc
+    artifact_dir = verify_immutable_model_path(project_root, model)
     manifest = model["artifact_manifest"] if isinstance(model["artifact_manifest"], dict) else {}
     for name, expected in manifest.items():
         artifact = artifact_dir / str(name)
@@ -2588,6 +2606,8 @@ def sync_once(config: SyncConfig) -> tuple[int, dict[str, Any]]:
         return 0, updated
     except Exception as exc:
         message = str(exc)
+        repeated_error = state.get("last_status") == "error" and state.get("last_error") == message
+        repeat_count = int(state.get("last_error_repeat_count") or 0) + 1 if repeated_error else 1
         failure = update_state(
             paths,
             strategy="futu_gateway_auto_paper_trading",
@@ -2599,18 +2619,21 @@ def sync_once(config: SyncConfig) -> tuple[int, dict[str, Any]]:
             last_message=message,
             score_signal_date=last_signal_date,
             last_error=message,
+            last_error_repeat_count=repeat_count,
+            last_error_first_at=(state.get("last_error_first_at") if repeated_error else now_iso()),
             last_traceback=traceback.format_exc(limit=20),
         )
-        record_sync_history(
-            paths,
-            config,
-            {
-                "status": "error",
-                "message": message,
-                "score_signal_date": last_signal_date,
-            },
-            append_legacy_jsonl=True,
-        )
+        if not repeated_error:
+            record_sync_history(
+                paths,
+                config,
+                {
+                    "status": "error",
+                    "message": message,
+                    "score_signal_date": last_signal_date,
+                },
+                append_legacy_jsonl=True,
+            )
         print(message, file=sys.stderr, flush=True)
         return 1, failure
 

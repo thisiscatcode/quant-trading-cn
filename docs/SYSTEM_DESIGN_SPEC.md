@@ -191,7 +191,7 @@ The Model Registry removes ambiguity between the model shown in Models, the snap
 | `model_deployments` | Exactly one active version per market, paper permission and monotonic revision |
 | `model_activation_events` | Previous/new version, actor, reason, paper state and audit history |
 
-Activation updates the deployment and audit event in one transaction. Consumers resolve the same deployment row. The paper executor verifies artifact checksums and keeps one resolved revision for the entire reconciliation cycle.
+Activation updates the deployment and audit event in one transaction. Consumers resolve the same deployment row. A paper-enabled deployment must resolve exactly to `quant_data/model_registry/{market}/{model_version}`; mutable training workspaces under `model_profiles` cannot be activated. The paper executor verifies artifact checksums and keeps one resolved revision for the entire reconciliation cycle.
 
 `run/model_profiles.json` is a training-profile catalog, not deployment state.
 

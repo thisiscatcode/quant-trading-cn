@@ -237,8 +237,10 @@ Repository-wide Python tests can be run in the established data-prep environment
 
 1. Read the active `model_deployments` row and revision.
 2. Confirm Models, Picks and Paper report the same version.
-3. Verify the artifact manifest before paper execution.
-4. Use a registry rollback or activation; never repair deployment state by copying model files.
+3. Confirm the deployment path is the versioned immutable directory `quant_data/model_registry/{market}/{model_version}`, never a mutable `model_profiles/.../models` training workspace.
+4. Verify the artifact manifest before paper execution.
+5. Compare **Last Sync Attempt** with **Last successful sync**; the former describes current health while the latter is historical evidence of the latest completed reconciliation.
+6. Use a registry rollback or activation; never repair deployment state by copying model files or rewriting a stored checksum.
 
 ## Backup scope
 

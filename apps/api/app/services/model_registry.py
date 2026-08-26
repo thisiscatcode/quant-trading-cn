@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import shutil
 from contextlib import contextmanager
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -170,6 +172,33 @@ def resolve_artifact_path(value: Any, settings: Settings | None = None) -> Path:
     return resolved
 
 
+def expected_immutable_artifact_path(
+    model: dict[str, Any],
+    settings: Settings | None = None,
+) -> Path:
+    resolved = settings or get_settings()
+    market = normalize_market(model.get("market"))
+    model_version = str(model.get("model_version") or "").strip()
+    if not model_version:
+        raise ModelRegistryError("model_version is required for immutable artifact resolution")
+    return (resolved.quant_dir / "model_registry" / market / model_version).resolve()
+
+
+def verify_immutable_artifact_location(
+    model: dict[str, Any],
+    settings: Settings | None = None,
+) -> Path:
+    resolved = settings or get_settings()
+    artifact_dir = resolve_artifact_path(model.get("artifact_path"), resolved)
+    expected = expected_immutable_artifact_path(model, resolved)
+    if artifact_dir != expected:
+        raise ModelRegistryError(
+            f"model {model.get('model_version') or 'unknown'} artifact path is mutable; "
+            f"expected {expected}"
+        )
+    return artifact_dir
+
+
 def _file_manifest(path: Path) -> dict[str, Any]:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -204,6 +233,59 @@ def verify_artifact_manifest(model: dict[str, Any], settings: Settings | None = 
         if current.get(name) != expected.get(name):
             raise ModelRegistryError(f"artifact checksum mismatch for {name}")
     return artifact_dir
+
+
+def _create_immutable_legacy_snapshot(
+    *,
+    market: str,
+    profile: str,
+    source: Path,
+    settings: Settings,
+) -> dict[str, Any]:
+    metadata = read_json(source / "training_metadata.json")
+    manifest = build_artifact_manifest(source)
+    latest_mtime = max((source / name).stat().st_mtime for name in manifest)
+    trained_at = _parse_datetime(metadata.get("trained_at"), datetime.fromtimestamp(latest_mtime, tz=UTC))
+    model_version = (
+        f"{normalize_market(market).lower()}-{_safe_slug(profile)}-"
+        f"{trained_at.astimezone(UTC).strftime('%Y%m%dT%H%M%SZ')}-{manifest_digest(manifest)[:8]}"
+    )
+    destination = expected_immutable_artifact_path(
+        {"market": market, "model_version": model_version},
+        settings,
+    )
+    if not destination.exists():
+        temporary = destination.parent / f".{destination.name}.{uuid4().hex}.tmp"
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary.mkdir()
+        try:
+            for name in manifest:
+                shutil.copy2(source / name, temporary / name)
+            record = {
+                "market": normalize_market(market),
+                "model_version": model_version,
+                "profile": profile,
+                "trained_at": trained_at.isoformat(),
+                "validation_status": "legacy_unreviewed",
+                "artifact_manifest": build_artifact_manifest(temporary),
+            }
+            (temporary / "registry_record.json").write_text(
+                json.dumps(record, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            os.rename(temporary, destination)
+        except Exception:
+            shutil.rmtree(temporary, ignore_errors=True)
+            raise
+    return _register_artifact_directory(
+        market=market,
+        profile=profile,
+        artifact_dir=destination,
+        validation_status="legacy_unreviewed",
+        settings=settings,
+        model_version=model_version,
+        trained_at=trained_at,
+    )
 
 
 def _model_record_from_artifacts(
@@ -354,11 +436,10 @@ def _legacy_profile_records(settings: Settings) -> list[dict[str, Any]]:
         metadata = read_json(artifact_dir / "training_metadata.json")
         profile = str(metadata.get("profile_name") or artifact_dir.parent.name).strip()
         registered.append(
-            _register_artifact_directory(
+            _create_immutable_legacy_snapshot(
                 market="CN",
                 profile=profile,
-                artifact_dir=artifact_dir,
-                validation_status="legacy_unreviewed",
+                source=artifact_dir,
                 settings=settings,
             )
         )
@@ -524,6 +605,8 @@ def resolve_active_model(
         raise ModelRegistryError(f"no active model deployment for {normalize_market(market)}")
     if purpose == "paper" and not deployment.get("paper_enabled"):
         raise ModelRegistryError(f"paper trading is disabled for {deployment['market']} model deployment")
+    if purpose == "paper":
+        verify_immutable_artifact_location(deployment, settings)
     artifact_dir = verify_artifact_manifest(
         {**deployment, "artifact_manifest": deployment.get("artifact_manifest") or {}},
         settings,
@@ -585,6 +668,7 @@ def activate_model(
                 raise ModelRegistryError(
                     f"model {model['model_version']} has validation status {model['validation_status']}"
                 )
+            verify_immutable_artifact_location(model, resolved)
             verify_artifact_manifest(model, resolved)
             cursor.execute(
                 "select active_model_id, paper_enabled, revision from model_deployments where market = %s for update",

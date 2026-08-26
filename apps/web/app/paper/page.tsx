@@ -117,6 +117,27 @@ function cleanBrokerMessage(value: unknown): string | null {
   return text;
 }
 
+function syncStatusLabel(status: unknown, message: unknown): string {
+  const normalizedStatus = String(status ?? "").trim().toLowerCase();
+  const normalizedMessage = String(message ?? "").trim().toLowerCase();
+  if (normalizedStatus === "success") {
+    return "Synced";
+  }
+  if (normalizedStatus === "error") {
+    return "Attention required";
+  }
+  if (normalizedStatus === "noop" && normalizedMessage.includes("outside active trading hours")) {
+    return "Market closed";
+  }
+  if (normalizedStatus === "noop") {
+    return "Up to date";
+  }
+  if (normalizedStatus === "dry_run") {
+    return "Dry run complete";
+  }
+  return normalizedStatus || "—";
+}
+
 function orderIdFrom(row: DashboardRow): string {
   return String(row.broker_order_id ?? row.order_id ?? "").trim();
 }
@@ -707,6 +728,8 @@ export default async function PaperPage({
   ];
 
   const latestStateUpdatedAt = formatDateTime(state.updated_at, user.locale);
+  const lastAttemptAt = formatDateTime(state.last_attempt_at, user.locale);
+  const lastSuccessAt = formatDateTime(state.last_success_at, user.locale);
   const totalPnlHint = `Realized ${formatDisplayValue(liveSummary.realized_pnl, { locale: user.locale, key: "realized_pnl" })} / Unrealized ${formatDisplayValue(liveSummary.unrealized_pnl, { locale: user.locale, key: "unrealized_pnl" })}`;
   const latestMessage = String(state.last_message ?? "—");
 
@@ -752,9 +775,9 @@ export default async function PaperPage({
           hint={formatDate(overview.targets.latest_signal_date, user.locale)}
         />
         <MetricCard
-          label={copy.paper.lastSync}
-          value={String(state.last_status ?? "—")}
-          hint={formatDateTime(state.last_success_at ?? state.last_attempt_at, user.locale)}
+          label="Last Sync Attempt"
+          value={syncStatusLabel(state.last_status, state.last_message)}
+          hint={lastAttemptAt}
         />
       </section>
 
@@ -764,6 +787,7 @@ export default async function PaperPage({
             <p className="panel-copy">{copy.paper.controlHint}</p>
             <div className="status-meta">
               <span>{copy.common.lastStateUpdate}: {latestStateUpdatedAt}</span>
+              <span>Last successful sync: {lastSuccessAt}</span>
               <span>{copy.paper.latestSignal}: {formatDate(state.score_signal_date, user.locale)}</span>
               <span>{copy.paper.gateway}: {gateway.healthy ? copy.common.live : copy.common.checkNeeded}</span>
               <span>Agent: {gateway.agent_id}</span>

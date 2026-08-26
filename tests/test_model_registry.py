@@ -17,6 +17,7 @@ from app.services.model_registry import (  # noqa: E402
     build_artifact_manifest,
     manifest_digest,
     resolve_artifact_path,
+    verify_immutable_artifact_location,
     verify_artifact_manifest,
 )
 from model_registry_artifacts import create_model_registry_snapshot  # noqa: E402
@@ -67,6 +68,23 @@ class ModelRegistryTests(unittest.TestCase):
             settings = SimpleNamespace(project_root=Path(tmp))
             with self.assertRaisesRegex(ModelRegistryError, "escapes PROJECT_ROOT"):
                 resolve_artifact_path("../outside", settings)
+
+    def test_paper_artifact_must_use_versioned_registry_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = SimpleNamespace(project_root=root, quant_dir=root / "quant_data")
+            model = {
+                "market": "CN",
+                "model_version": "cn-medium-v1",
+                "artifact_path": "quant_data/model_profiles/medium/models",
+            }
+            with self.assertRaisesRegex(ModelRegistryError, "artifact path is mutable"):
+                verify_immutable_artifact_location(model, settings)
+
+            immutable = root / "quant_data" / "model_registry" / "CN" / "cn-medium-v1"
+            immutable.mkdir(parents=True)
+            model["artifact_path"] = str(immutable.relative_to(root))
+            self.assertEqual(verify_immutable_artifact_location(model, settings), immutable)
 
     def test_manifest_digest_is_order_independent(self) -> None:
         left = {"a": {"sha256": "1", "size": 1}, "b": {"sha256": "2", "size": 2}}

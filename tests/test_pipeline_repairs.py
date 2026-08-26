@@ -1554,6 +1554,42 @@ class PipelineRepairTests(unittest.TestCase):
         self.assertEqual(state["last_status"], "noop")
         self.assertFalse(history_path.exists())
 
+    def test_paper_sync_deduplicates_repeated_identical_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state_dir = root / "state"
+            state_dir.mkdir()
+            config = self._paper_sync_config(root / "missing.parquet", state_dir)
+
+            with mock.patch("paper_trade_futu.resolve_paper_model", side_effect=RuntimeError("artifact mismatch")):
+                first_code, first_state = sync_once(config)
+                second_code, second_state = sync_once(config)
+
+            history = (state_dir / "sync_history.jsonl").read_text(encoding="utf-8").splitlines()
+
+        self.assertEqual(first_code, 1)
+        self.assertEqual(second_code, 1)
+        self.assertEqual(first_state["last_error_repeat_count"], 1)
+        self.assertEqual(second_state["last_error_repeat_count"], 2)
+        self.assertEqual(len(history), 1)
+
+    def test_paper_model_path_must_be_immutable(self) -> None:
+        from paper_trade_futu import verify_immutable_model_path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            model = {
+                "market": "CN",
+                "model_version": "cn-medium-v1",
+                "artifact_path": "quant_data/model_profiles/medium/models",
+            }
+            with self.assertRaisesRegex(RuntimeError, "uses a mutable artifact path"):
+                verify_immutable_model_path(root, model)
+
+            expected = root / "quant_data" / "model_registry" / "CN" / "cn-medium-v1"
+            model["artifact_path"] = str(expected.relative_to(root))
+            self.assertEqual(verify_immutable_model_path(root, model), expected)
+
     def test_paper_sync_does_not_reorder_same_score_snapshot(self) -> None:
         class NoopGateway:
             def __init__(self, config: SyncConfig) -> None:
